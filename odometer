@@ -1,1 +1,85 @@
-//ROs2 Odometer Node
+//ROS2 Odometer Node
+
+#include <cmath>
+#include <memory>
+#include <chrono>
+
+#include "rclcpp/rclcpp.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "geometry_msgs/msg/transform_stamped.hpp"
+#include "std_srvs/srv/empty.hpp"
+#include "tf2/LinearMath/Quaternion.h"
+#include "tf2_ros/transform_broadcaster.h"
+
+#include "bunker_msgs/msg/bunker_status.hpp"
+
+using std::placeholders::_1;
+using std::placeholders::_2;
+
+class Odometer : public rclcpp::Node
+{
+public:
+  Odometer()
+  : Node("odometer"), _x(0.0), _y(0.0), _theta(0.0), //TODO revise parameters
+  {
+    //Robot status subscriber
+    //TODO revise
+    status_sub = this->create_subscription<std_msgs::msg::Odometry>(
+      "/bunker_status", 10, 
+
+    //Odom publisher 
+    //TODO revise
+    odom_pub = this->create_publisher<std_msgs::msg::Odometry>("/project_odom", 50);
+    timer = this->create_wall_timer(
+      500ms, std::bind(&Odometry::on_timer, this));
+
+    //TF broadcaster for odom
+    tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+
+    //Reset custom service
+    reset = this->create_service<reset::srv::Empty>(
+      "reset",
+      std::bind(&Odometer::reset_handle, this, _1, _2));
+
+    RCLCPP_INFO(this->get_logger(), "Odometer node started. Ready to start receiving messages from /bunker_status...");
+  }
+
+private:
+  void status_handle( //TODO
+
+  )
+  {
+
+  }
+
+  void runge_kutta_2 ( //Approximate the odometry calculation using RK2 method - DONE
+    double &x, double &y, double &theta, 
+    const double &v, const double &omega, const double &dt)
+  {
+    double theta_mid = theta_ + omega * dt / 2.0;
+    x     += v * std::cos(theta_mid) * dt;
+    y     += v * std::sin(theta_mid) * dt;
+    theta += omega * dt;
+
+    // theta should be in the [-pi, pi] interval
+    theta = std::atan2(std::sin(theta), std::cos(theta));
+  }
+
+  void reset_handle( //DONE
+    const std::shared_ptr<reset::srv::Empty::Request> request,
+    std::shared_ptr<reset::srv::Empty::Response> response)
+    {
+        _x = 0.0;
+        _y = 0.0;
+        _theta = 0.0;
+        RCLCPP_INFO(this->get_logger(), "Odometry parameters have been reset to default values.")
+  }
+};
+
+int main(int argc, char * argv[]) //DONE
+{
+  rclcpp::init(argc, argv);
+  rclcpp::spin(std::make_shared<Odometer>());
+  rclcpp::shutdown();
+  return 0;
+}
