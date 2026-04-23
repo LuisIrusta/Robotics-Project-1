@@ -2,7 +2,6 @@
 
 #include <cmath>
 #include <memory>
-#include <chrono>
 
 #include "rclcpp/rclcpp.hpp"
 #include "nav_msgs/msg/odometry.hpp"
@@ -20,63 +19,127 @@ class Odometer : public rclcpp::Node
 {
 public:
   Odometer()
-  : Node("odometer"), _x(0.0), _y(0.0), _theta(0.0), //TODO revise parameters
+  : Node("odometer"), _x(0.0), _y(0.0), _theta(0.0), _hasTime(false)
   {
     //Robot status subscriber
-    //TODO revise
-    status_sub = this->create_subscription<std_msgs::msg::Odometry>(
-      "/bunker_status", 10, 
+    _status_sub = this->create_subscription<bunker_msgs::msg::BunkerStatus>(
+      "/bunker_status", 10, std::bind(&Odometer::status_callback, this, _1));
 
-    //Odom publisher 
-    //TODO revise
-    odom_pub = this->create_publisher<std_msgs::msg::Odometry>("/project_odom", 50);
-    timer = this->create_wall_timer(
-      500ms, std::bind(&Odometry::on_timer, this));
+    //Odom publisher
+    _odom_pub = this->create_publisher<nav_msgs::msg::Odometry>("/project_odom", 10);
 
     //TF broadcaster for odom
-    tf_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(this);
+    _tf_broadcaster = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
 
     //Reset custom service
-    reset = this->create_service<reset::srv::Empty>(
+    _reset = this->create_service<std_srvs::srv::Empty>(
       "reset",
-      std::bind(&Odometer::reset_handle, this, _1, _2));
+      std::bind(&Odometer::reset_callback, this, _1, _2));
 
     RCLCPP_INFO(this->get_logger(), "Odometer node started. Ready to start receiving messages from /bunker_status...");
   }
 
 private:
-  void status_handle( //TODO
 
-  )
+  rclcpp::Subscription<bunker_msgs::msg::BunkerStatus>::SharedPtr _status_sub;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr _odom_pub;
+  std::unique_ptr<tf2_ros::TransformBroadcaster> _tf_broadcaster;
+  rclcpp::Service<std_srvs::srv::Empty>::SharedPtr _reset;
+
+  double _x;
+  double _y;
+  double _theta;
+
+  rclcpp::Time _prevTime;
+  bool _hasTime;
+
+  void status_callback(
+    const bunker_msgs::msg::BunkerStatus::SharedPtr msg)
   {
+    rclcpp::Time currTime(msg->header.stamp); //We need to capture the internal time of the bag
 
+    if(!_hasTime){ //only if we have 2 different times we can calculate dt -> odometry
+        _prevTime = currTime;
+        _hasTime = true;
+        return;
+    }
+
+    double dt = (currTime - _prevTime).seconds();
+    _prevTime = currTime;
+
+    if(dt <= 0) return; //Just in case dt does not make sense
+
+    const double v = msg->linear_velocity;
+    const double omega = msg->angular_velocity;
+
+    runge_kutta_2(_x, _y, _theta, v, omega, dt); //Use RK2 method to calculate odom
+
+    tf2::Quaternion q;
+    q.setRPY(0.0, 0.0, _theta);
+
+    //odom msg
+    nav_msgs::msg::Odometry odom_msg;
+    odom_msg.header.stamp = currTime;
+    odom_msg.header.frame_id = "odom";
+    odom_msg.child_frame_id = "base_link2";
+
+    odom_msg.pose.pose.position.x  = _x;
+    odom_msg.pose.pose.position.y  = _y;
+    odom_msg.pose.pose.position.z  = 0.0;
+    odom_msg.pose.pose.orientation.x = q.x();
+    odom_msg.pose.pose.orientation.y = q.y();
+    odom_msg.pose.pose.orientation.z = q.z();
+    odom_msg.pose.pose.orientation.w = q.w();
+
+    odom_msg.twist.twist.linear.x  = v;
+    odom_msg.twist.twist.angular.z = omega;
+
+    _odom_pub->publish(odom_msg);
+
+    //TF message odom
+    geometry_msgs::msg::TransformStamped tf;
+
+    tf.header.stamp = currTime;
+    tf.header.frame_id = "odom";
+    tf.child_frame_id = "base_link2";
+
+    tf.transform.translation.x = _x;
+    tf.transform.translation.y = _y;
+    tf.transform.translation.z = 0.0;
+    tf.transform.rotation.x = q.x();
+    tf.transform.rotation.y = q.y();
+    tf.transform.rotation.z = q.z();
+    tf.transform.rotation.w = q.w();
+
+    _tf_broadcaster->sendTransform(tf);
   }
 
-  void runge_kutta_2 ( //Approximate the odometry calculation using RK2 method - DONE
+  void runge_kutta_2 ( //Approximate the odometry calculation using RK2 method
     double &x, double &y, double &theta, 
     const double &v, const double &omega, const double &dt)
   {
-    double theta_mid = theta_ + omega * dt / 2.0;
+    double theta_mid = theta + omega * dt / 2.0;
     x     += v * std::cos(theta_mid) * dt;
     y     += v * std::sin(theta_mid) * dt;
     theta += omega * dt;
 
-    // theta should be in the [-pi, pi] interval
+    //theta should be in the [-pi, pi] interval
     theta = std::atan2(std::sin(theta), std::cos(theta));
   }
 
-  void reset_handle( //DONE
-    const std::shared_ptr<reset::srv::Empty::Request> request,
-    std::shared_ptr<reset::srv::Empty::Response> response)
+  void reset_callback(
+    const std::shared_ptr<std_srvs::srv::Empty::Request>,
+    std::shared_ptr<std_srvs::srv::Empty::Response>)
     {
         _x = 0.0;
         _y = 0.0;
         _theta = 0.0;
-        RCLCPP_INFO(this->get_logger(), "Odometry parameters have been reset to default values.")
+        _hasTime = false;
+        RCLCPP_INFO(this->get_logger(), "Odometry parameters have been reset to default values.");
   }
 };
 
-int main(int argc, char * argv[]) //DONE
+int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<Odometer>());
